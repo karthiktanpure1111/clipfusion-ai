@@ -1,0 +1,86 @@
+# ClipFusion AI — local infrastructure + full stack.
+#   docker compose up -d postgres redis minio        # infra only (run API/web locally)
+#   docker compose --profile app up -d --build       # everything
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: clipfusion
+      POSTGRES_PASSWORD: clipfusion
+      POSTGRES_DB: clipfusion
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipfusion"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: clipfusion
+      MINIO_ROOT_PASSWORD: clipfusion-secret
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: [miniodata:/data]
+
+  api:
+    profiles: ["app"]
+    build: { context: ./backend }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://clipfusion:clipfusion@postgres:5432/clipfusion
+      REDIS_URL: redis://redis:6379/0
+      WORKER_MODE: celery
+      NO_LOGIN_TRUSTED_NETWORKS: 172.16.0.0/12,192.168.65.0/24  # Docker gateway; ports below are 127.0.0.1 only
+      BACKEND_PUBLIC_URL: http://localhost:8010
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8010 --proxy-headers"]
+    ports: ["127.0.0.1:8010:8010"]  # ClipFusion API (port 8000 is left to other programs)
+    volumes: [mediadata:/app/data]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  worker:
+    profiles: ["app"]
+    build: { context: ./backend }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://clipfusion:clipfusion@postgres:5432/clipfusion
+      REDIS_URL: redis://redis:6379/0
+      WORKER_MODE: celery
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "analysis,render,publish,default", "-c", "2", "--loglevel", "INFO"]
+    volumes: [mediadata:/app/data]
+    depends_on: [api]
+
+  beat:
+    profiles: ["app"]
+    build: { context: ./backend }
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://clipfusion:clipfusion@postgres:5432/clipfusion
+      REDIS_URL: redis://redis:6379/0
+      WORKER_MODE: celery
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel", "INFO", "--schedule", "/tmp/celerybeat-schedule"]
+    depends_on: [api]
+
+  web:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8010/api/v1
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  mediadata:
