@@ -97,3 +97,13 @@ cd frontend; npm run typecheck; npm run lint; npm test
 `backend/app/modules` (one package per feature), `backend/app/workers` (background jobs), `frontend/src`
 (website), `shared/fixtures` (cases that keep the live preview identical to the export),
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/API.md](docs/API.md), [docs/API_V2.md](docs/API_V2.md).
+
+## License
+
+ClipFusion AI is released under the [MIT License](LICENSE): you may use, copy, modify and share it, also
+commercially, as long as the copyright notice is kept. It comes without any warranty.
+
+Only process and publish videos you have the rights to (your own, or with the creator's permission or a
+licence). Third-party tools and AI models that ClipFusion downloads or uses (for example FFmpeg,
+faster-whisper models, yt-dlp) keep their own licenses. Downloading from YouTube links is off by default
+because YouTube's Terms of Service don't allow it.
