@@ -369,6 +369,8 @@ export interface ClipOut {
   framing_mode: string | null;
   warning_count: number;
   blocking_warning_count: number;
+  /** Blocking framing warnings: review the framing before rendering. */
+  needs_framing_review?: boolean;
   warnings_acknowledged: boolean;
   created_at: ISODate;
   updated_at: ISODate;
@@ -512,7 +514,8 @@ export interface PlatformRequirements {
   eligibility: string[];
   app_review: string[];
   notes: string[];
-  quota?: { daily_units: number; upload_cost: number };
+  /** YouTube: uploads and searches have their own daily buckets; daily_units covers all other calls. */
+  quota?: { daily_units: number; uploads_per_day?: number; searches_per_day?: number; upload_cost: number };
   publish_limit?: number;
   docs_links: { title: string; url: string }[];
 }
@@ -696,6 +699,19 @@ export interface DashboardSummary {
   recent_clips: ClipOut[];
   active_jobs: JobOut[];
   upcoming: QueueItemOut[];
+  /** Today's YouTube Data API usage (ClipFusion's count; resets at midnight Pacific Time). */
+  youtube_quota?: {
+    uploads: QuotaBucket;
+    search: QuotaBucket;
+    units: QuotaBucket;
+    resets_at: ISODate;
+  } | null;
+}
+
+export interface QuotaBucket {
+  used: number;
+  limit: number;
+  remaining: number;
 }
 
 export interface NotificationOut {

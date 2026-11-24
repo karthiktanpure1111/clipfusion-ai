@@ -509,7 +509,8 @@ def _analyze_handler(ctx: JobContext, db: Session, job: ProcessingJob) -> dict[s
     tracker.write(force=True)
     source.status, source.processed_at, source.error = SourceStatus.READY, utcnow(), None
     title = source.title or "video"
-    body = (f"{len(clips)} new clips were found. They are being framed and rendered automatically." if clips
+    body = (f"{len(clips)} new clips were found and framed. Render the ones you want: each rendered clip is "
+            "uploaded to YouTube, the first right away and then one per hour." if clips
             else "No new highlight clips were found (existing and removed clips were kept).")
     notify(db, source.user_id, NotificationType.PROCESSING_COMPLETE, f"Analysis finished: {title}"[:200], body,
            link=f"/app/videos/{source.id}", data={"video_source_id": str(source.id), "clips": len(clips)})

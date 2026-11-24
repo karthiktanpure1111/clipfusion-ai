@@ -102,8 +102,8 @@ def _mode_render_options(source: VideoSource) -> dict:
 
 def create_clips(db: Session, source: VideoSource, candidates: list[HighlightCandidate], *,
                  use_llm: bool, progress: Progress | None = None) -> list[GeneratedClip]:
-    """Create clips for ``candidates`` and dispatch one ``clip_vision`` job per new clip (each
-    followed by an automatic render).
+    """Create clips for ``candidates`` and dispatch one ``clip_vision`` job per new clip (proxy, thumbnail,
+    face tracking and framing; the user renders the clips one by one).
 
     Candidates overlapping an existing (removed or not) or just created clip of the source with
     temporal IoU > 0.6 are skipped. ``progress(fraction, message)`` reports metadata generation.
@@ -150,7 +150,7 @@ def create_clips(db: Session, source: VideoSource, candidates: list[HighlightCan
         progress(1.0, f"{len(created)} clips created")
     for clip in created:
         job, is_new = create_job(db, user_id=source.user_id, job_type=JobType.CLIP_VISION,
-                                 video_source_id=source.id, clip_id=clip.id, params={"auto_render": True},
+                                 video_source_id=source.id, clip_id=clip.id, params={"auto_render": False},
                                  idempotency_key=f"clip_vision:{clip.id}", stage="queued")
         if is_new:
             dispatch_job(db, job, CLIP_VISION_TASK)

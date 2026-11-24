@@ -151,10 +151,8 @@ def _clip_vision(ctx: JobContext, db: Session, job: ProcessingJob) -> dict[str, 
         if (clip.start_time, clip.end_time) == analysed:
             break
         log.info("clip %s was trimmed during its vision analysis; analysing the new range", clip.id)
-    if job.params.get("auto_render", True):
+    if job.params.get("auto_render", False):  # clips are rendered by the user, one by one
         result["auto_render"] = _auto_render(db, clip)
-        if result["auto_render"] != "requested":  # no render follows: this may be the video's last job
-            _auto_schedule(db, clip.video_source_id, exclude_job=job.id)
     return result
 
 
@@ -375,12 +373,10 @@ def _render(ctx: JobContext, db: Session, job: ProcessingJob) -> dict[str, Any]:
     if thumb_key is not None:
         clip.thumbnail_key = thumb_key
     clip.render_status = RenderStatus.RENDERED if compute_render_hash(clip) == render_hash else RenderStatus.STALE
-    if job.params.get("reason") not in AUTO_RENDER_REASONS:  # automatic renders stay quiet
-        outcome = "is ready to upload." if clip.render_status == RenderStatus.RENDERED else \
-            "was rendered, but it was edited meanwhile. Render it again to include your changes."
+    if job.params.get("reason") not in AUTO_RENDER_REASONS and clip.render_status != RenderStatus.RENDERED:
         notify(db, clip.user_id, NotificationType.RENDER_COMPLETE, "Render complete",
-               f"“{clip.title or 'Your clip'}” {outcome}", link=f"/app/clips/{clip.id}",
-               data={"clip_id": str(clip.id)})
+               f"“{clip.title or 'Your clip'}” was rendered, but it was edited meanwhile. Render it again to "
+               "include your changes.", link=f"/app/clips/{clip.id}", data={"clip_id": str(clip.id)})
     on_clip_render_finished(db, clip, True)
     db.commit()
     if old_out and old_out != out_key:
@@ -395,8 +391,14 @@ def _render(ctx: JobContext, db: Session, job: ProcessingJob) -> dict[str, Any]:
     db.commit()
     if clip.render_status == RenderStatus.STALE and job.params.get("reason") in AUTO_RENDER_REASONS:
         _rerender(db, clip, job.params.get("reason"))
-    _notify_source_ready(db, clip.video_source_id, exclude_job=job.id)
-    _auto_schedule(db, clip.video_source_id, exclude_job=job.id)
+    if job.params.get("reason") == "auto":  # (older jobs) automatic renders of a whole video
+        _notify_source_ready(db, clip.video_source_id, exclude_job=job.id)
+    if clip.render_status == RenderStatus.RENDERED:
+        from app.modules.scheduling.timeline import schedule_rendered_clip
+
+        item = schedule_rendered_clip(db, _reload(db, clip))  # upload on render (if switched on)
+        if job.params.get("reason") not in AUTO_RENDER_REASONS:
+            _notify_rendered(db, _reload(db, clip), item)
     log.info("clip %s rendered (%s, %.1fs)", clip.id, out_key, result.duration)
     return {"output_key": out_key, "duration": result.duration, "size_bytes": result.size_bytes,
             "width": result.width, "height": result.height, "render_hash": render_hash}
@@ -425,18 +427,29 @@ def _rerender(db: Session, clip: GeneratedClip, reason: str) -> None:
         log.info("clip %s not re-rendered automatically: %s", clip.id, exc)
 
 
-def _auto_schedule(db: Session, source_id, *, exclude_job) -> None:  # noqa: ANN001
-    """Auto-schedule: once no analysis/framing/render job of the video is left, its ready clips are scheduled
-    in timeline order (the first right away, then one per gap)."""
-    from app.modules.scheduling.timeline import auto_schedule_source
-    from app.workers.jobs import ACTIVE_STATUSES
+def _notify_rendered(db: Session, clip: GeneratedClip, item: Any) -> None:  # noqa: ANN401
+    """Render complete: says whether the clip uploads now, when it uploads, or that it is ready to upload."""
+    from zoneinfo import ZoneInfo
 
-    active = db.scalar(select(ProcessingJob.id).where(
-        ProcessingJob.video_source_id == source_id, ProcessingJob.id != exclude_job,
-        ProcessingJob.job_type.in_((JobType.ANALYSIS, JobType.CLIP_VISION, JobType.RENDER)),
-        ProcessingJob.status.in_(ACTIVE_STATUSES)).limit(1))
-    if active is None:
-        auto_schedule_source(db, source_id)
+    from app.modules.notifications.service import notify
+    from app.modules.scheduling.slots import ensure_utc
+
+    name = f"“{clip.title or 'Your clip'}”"
+    if item is None or item.scheduled_at is None:
+        body = f"{name} is rendered and ready to upload."
+    elif ensure_utc(item.scheduled_at) <= utcnow():
+        body = f"{name} is rendered and is being uploaded to YouTube now."
+    else:
+        user = db.get(User, clip.user_id)
+        try:
+            tz = ZoneInfo((user.timezone if user else None) or "UTC")
+        except Exception:  # noqa: BLE001 - unknown zone name
+            tz = ZoneInfo("UTC")
+        local = ensure_utc(item.scheduled_at).astimezone(tz)
+        body = f"{name} is rendered; it uploads to YouTube at {local:%H:%M} ({local:%a %d %b}), one hour after the previous post."
+    notify(db, clip.user_id, NotificationType.RENDER_COMPLETE, "Render complete", body, link=f"/app/clips/{clip.id}",
+           data={"clip_id": str(clip.id)})
+    db.commit()
 
 
 def _notify_source_ready(db: Session, source_id, *, exclude_job) -> None:  # noqa: ANN001

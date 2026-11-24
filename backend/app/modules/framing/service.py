@@ -290,15 +290,16 @@ def video_template(db: Session, clip: GeneratedClip) -> FramingConfig | None:
 
 def apply_video_framing(db: Session, clip: GeneratedClip) -> dict[str, int]:
     """Make ``clip``'s framing the framing of its video and apply it to the video's other clips that are not
-    uploaded yet (each re-fitted, its render refreshed). Clips still being analysed pick it up when their
-    analysis finishes. Commits. Returns ``{"applied", "needs_review", "rendering"}``."""
+    uploaded yet (each re-fitted). Nothing is rendered here: the user renders clips one by one (a clip that was
+    already rendered becomes out of date and is rendered again before it uploads). Clips still being analysed
+    pick the framing up when their analysis finishes. Commits. Returns ``{"applied", "needs_review"}``."""
     from app.models.enums import CleanupStatus
     from app.modules.notifications.service import notify
-    from app.modules.rendering.service import active_render_job, render_is_current, request_render
+    from app.schemas.framing import blocking_warnings
     from app.workers.jobs import ACTIVE_STATUSES
 
     if clip.framing is None:
-        return {"applied": 0, "needs_review": 0, "rendering": 0}
+        return {"applied": 0, "needs_review": 0}
     media = require_media(clip_source(db, clip))
     template = strip_keyframes(load_config(clip.framing, media))
     source = clip_source(db, clip)
@@ -310,7 +311,7 @@ def apply_video_framing(db: Session, clip: GeneratedClip) -> dict[str, int]:
     vision_busy = set(db.scalars(select(ProcessingJob.clip_id).where(
         ProcessingJob.clip_id.in_([c.id for c in siblings]), ProcessingJob.job_type == JobType.CLIP_VISION,
         ProcessingJob.status.in_(ACTIVE_STATUSES)))) if siblings else set()
-    counts = {"applied": 0, "needs_review": 0, "rendering": 0}
+    counts = {"applied": 0, "needs_review": 0}
     for sib in siblings:
         if sib.upload_status in SKIP_UPLOAD or sib.cleanup_status == CleanupStatus.CLEANED:
             continue
@@ -324,20 +325,8 @@ def apply_video_framing(db: Session, clip: GeneratedClip) -> dict[str, int]:
             log.info("video framing not applied to clip %s: %s", sib.id, exc.message)
             continue
         counts["applied"] += 1
-        if render_is_current(sib):
-            continue
-        if active_render_job(db, sib) is not None:
-            counts["rendering"] += 1  # the running render finishes stale and is re-run automatically
-            continue
-        try:
-            request_render(db, sib, acknowledge_warnings=False, reason="video_framing")
-        except ConflictError as exc:
-            db.rollback()
-            if exc.code == "framing_warnings_unacknowledged":
-                counts["needs_review"] += 1
-        except AppError as exc:
-            db.rollback()
-            log.info("render of clip %s after the video framing change not started: %s", sib.id, exc.message)
+        if not sib.framing.warnings_acknowledged and blocking_warnings(stored_warnings(sib)):
+            counts["needs_review"] += 1
     if counts["needs_review"]:
         n = counts["needs_review"]
         notify(db, clip.user_id, NotificationType.FRAMING_REVIEW, "Framing review needed",

@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.core.database import utcnow
 from app.models import GeneratedClip, Notification, PublishingQueueItem
-from app.models.enums import JobType, QueueStatus
+from app.models.enums import QueueStatus
 from app.modules.scheduling.slots import ensure_utc
 from tests.test_upload_runs_factories import (  # noqa: F401 - fixtures
     API,
@@ -122,57 +122,67 @@ def test_missed_slots_move_together_keeping_gaps(client, db, user, tasks) -> Non
     assert shift_missed(db, now=now + timedelta(minutes=5)) == 0  # on time now: nothing moves
 
 
-def test_auto_schedule_is_on_by_default_for_a_rendered_video(client, db, user, tasks, monkeypatch) -> None:  # noqa: F811
+def test_each_rendered_clip_uploads_now_or_one_hour_after_the_previous(client, db, user, tasks, monkeypatch) -> None:  # noqa: F811,E501
     from app.core.config import get_settings
-    from app.modules.scheduling.timeline import auto_schedule_source
+    from app.modules.scheduling.timeline import schedule_rendered_clip
 
     monkeypatch.setattr(get_settings(), "auto_schedule_default", True)  # the app default (off in the test env)
-    from app.workers.jobs import create_job
-    from app.workers.tasks_clips import _auto_schedule
-
     acc, src, clips = make_world(db, user, [200.0, 100.0, 20.0])
     h = headers(user)
     cfg = client.get(f"{API}/publishing/auto-schedule", headers=h).json()
     assert cfg["enabled"] is True and cfg["gap_minutes"] == 60 and cfg["connected_account_id"] == str(acc.id)
 
-    # while another clip of the video is still rendering nothing is scheduled ...
-    busy, _ = create_job(db, user_id=user.id, job_type=JobType.RENDER, video_source_id=src.id, clip_id=clips[0].id,
-                         idempotency_key=f"render:{clips[0].id}:test")
-    _auto_schedule(db, src.id, exclude_job=None)
-    assert _items(db, acc) == []
-    # ... once the video's last render is done, its clips are scheduled in timeline order, the first right away
-    _auto_schedule(db, src.id, exclude_job=busy.id)
-    items = _items(db, acc)
-    assert [_clip_title(db, i) for i in items] == ["Clip at 20", "Clip at 100", "Clip at 200"]
-    times = [ensure_utc(i.scheduled_at) for i in items]
-    assert times[0] <= utcnow() and times[1] - times[0] == HOUR and times[2] - times[1] == HOUR
-    assert items[0].status == QueueStatus.PUBLISHING and all(i.origin == "timeline" for i in items)
-    assert auto_schedule_source(db, src.id) == []  # never scheduled twice
-
-    # a clip the user unscheduled is not put back
-    client.post(f"{API}/publishing/queue/{items[2].id}/cancel", headers=h)
+    # the user renders clips one by one, in any order: each joins the upload line in render order
+    before = utcnow()
+    first = schedule_rendered_clip(db, clips[1])  # the clip at 100 s, rendered first: uploads right away
+    second = schedule_rendered_clip(db, clips[2])  # the clip at 20 s: one hour later
+    third = schedule_rendered_clip(db, clips[0])  # the clip at 200 s: one hour after that
     db.expire_all()
-    assert auto_schedule_source(db, src.id) == []
-    assert db.get(PublishingQueueItem, items[2].id).status == QueueStatus.CANCELLED
+    t1, t2, t3 = (ensure_utc(db.get(PublishingQueueItem, i.id).scheduled_at) for i in (first, second, third))
+    assert before - timedelta(seconds=1) <= t1 <= utcnow() and t2 - t1 == HOUR and t3 - t2 == HOUR
+    assert db.get(PublishingQueueItem, first.id).status == QueueStatus.PUBLISHING  # started immediately
+    assert db.get(PublishingQueueItem, second.id).status == QueueStatus.SCHEDULED
+    assert all(db.get(PublishingQueueItem, i.id).origin == "timeline" for i in (first, second, third))
+    assert schedule_rendered_clip(db, db.get(GeneratedClip, clips[1].id)) is None  # a re-render: never twice
 
-    # videos added without confirming rights are never auto-uploaded
-    _acc2, src2, _c2 = make_world(db, user, [5.0])
+    # a clip the user unscheduled is not put back by rendering it again
+    client.post(f"{API}/publishing/queue/{third.id}/cancel", headers=h)
+    db.expire_all()
+    assert schedule_rendered_clip(db, db.get(GeneratedClip, clips[0].id)) is None
+
+    # videos added without confirming rights are never uploaded automatically
+    _a2, src2, c2 = make_world(db, user, [5.0])
     src2.rights_confirmed = False
     db.commit()
-    assert auto_schedule_source(db, src2.id) == []
+    assert schedule_rendered_clip(db, c2[0]) is None
 
-    # switched off: nothing is scheduled; switched on again: only clips created from then on
+    # switched off: rendering only renders
     client.put(f"{API}/publishing/auto-schedule", json={"enabled": False, "gap_minutes": 60}, headers=h)
     db.expire_all()
-    _acc3, src3, _c3 = make_world(db, user, [5.0])
-    assert auto_schedule_source(db, src3.id) == []
-    on = client.put(f"{API}/publishing/auto-schedule", headers=h,
-                    json={"enabled": True, "connected_account_id": str(acc.id), "gap_minutes": 60}).json()
-    assert on["enabled"] is True and on["since"]
+    _a3, _s3, c3 = make_world(db, user, [5.0])
+    assert schedule_rendered_clip(db, c3[0]) is None
+
+
+def test_a_clip_rendered_soon_after_an_upload_waits_an_hour_after_it(client, db, user, tasks, monkeypatch) -> None:  # noqa: F811,E501
+    from app.core.config import get_settings
+    from app.modules.scheduling.timeline import schedule_rendered_clip
+
+    monkeypatch.setattr(get_settings(), "auto_schedule_default", True)
+    _acc, _src, clips = make_world(db, user, [20.0, 100.0, 200.0])
+    done = schedule_rendered_clip(db, clips[0])
+    uploaded_at = utcnow() - timedelta(minutes=20)
+    done.status, done.published_at, done.scheduled_at = QueueStatus.PUBLISHED, uploaded_at, uploaded_at
+    db.commit()
+    nxt = schedule_rendered_clip(db, clips[1])  # rendered 20 min after the previous upload
+    assert ensure_utc(nxt.scheduled_at) == uploaded_at + HOUR
     db.expire_all()
-    assert auto_schedule_source(db, src3.id) == []  # created before it was switched on again
-    _acc4, src4, _c4 = make_world(db, user, [5.0, 50.0])
-    assert len(auto_schedule_source(db, src4.id)) == 2
+    later = db.get(PublishingQueueItem, nxt.id)
+    later.status = QueueStatus.PUBLISHED  # pretend both went out long ago
+    later.published_at = later.scheduled_at = utcnow() - 3 * HOUR
+    db.get(PublishingQueueItem, done.id).published_at = utcnow() - 4 * HOUR
+    db.commit()
+    before = utcnow()
+    assert before - timedelta(seconds=1) <= ensure_utc(schedule_rendered_clip(db, clips[2]).scheduled_at) <= utcnow()
 
 
 def test_upload_now_of_a_scheduled_clip(client, db, user, tasks) -> None:  # noqa: F811

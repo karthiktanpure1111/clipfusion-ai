@@ -42,7 +42,9 @@ def test_saved_framing_applies_to_the_whole_video(client, db, user, tasks) -> No
     assert db.get(GeneratedClip, other[0].id).framing.mode == "full_frame"  # other videos untouched
     assert db.get(VideoSource, src.id).framing_template["mode"] == "manual"
     assert db.get(VideoSource, other_src.id).framing_template is None
-    rendered = [kw for name, kw in tasks if name == "render_clip"]
-    assert len(rendered) == 2  # the two updated clips are re-rendered with the new framing
+    assert not any(name == "render_clip" for name, _ in tasks)  # nothing renders by itself: the user renders
+    from app.modules.rendering.service import render_is_current
+
+    assert not render_is_current(db.get(GeneratedClip, clips[1].id))  # its old render is out of date now
     # new clips of the video start with the video's framing
     assert framing.video_template(db, db.get(GeneratedClip, clips[1].id)).mode == "manual"

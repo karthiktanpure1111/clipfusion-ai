@@ -268,7 +268,7 @@ export function ScheduledList({ sourceId, clips }: { sourceId: string; clips: Cl
   );
 }
 
-/** Auto-schedule (on by default): a video's clips are scheduled once rendered — clip 1 now, then one per `gap`. */
+/** Upload on render (on by default): each clip the user renders uploads right away or `gap` after the previous clip. */
 export function AutoScheduleToggle({ target, gap }: { target: UploadTarget; gap: number }) {
   const tz = useUserTz() ?? browserTimezone();
   const now = useNow();
@@ -290,7 +290,9 @@ export function AutoScheduleToggle({ target, gap }: { target: UploadTarget; gap:
       },
       {
         onSuccess: (r) =>
-          r.enabled ? toast.success(`Auto-schedule is on: clip 1 right away, then one every ${gapLabel(r.gap_minutes)}`) : toast.info("Auto-schedule is off"),
+          r.enabled
+            ? toast.success(`On: each clip you render uploads right away or ${gapLabel(r.gap_minutes)} after the previous one`)
+            : toast.info("Off: rendering a clip no longer uploads it"),
       },
     );
 
@@ -300,16 +302,16 @@ export function AutoScheduleToggle({ target, gap }: { target: UploadTarget; gap:
         checked={on}
         disabled={auto.isLoading || save.isPending || (!on && !canEnable)}
         onCheckedChange={(v) => apply(!!v)}
-        aria-label="Auto-schedule clips after they render"
+        aria-label="Upload each clip I render"
       />
       <div className="min-w-0 space-y-1 text-sm">
         <p className="flex items-center gap-1.5 font-medium">
-          <Repeat className="size-3.5" /> Auto-schedule clips after they render
+          <Repeat className="size-3.5" /> Upload each clip I render
         </p>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          When a video&apos;s clips finish rendering they are scheduled by themselves, in timeline order: clip 1 uploads right away, then one clip every{" "}
-          {gapLabel(on && a ? a.gap_minutes : gap)}. A clip rendered later (for example after a framing review) joins the end of the queue. It uses the rights
-          you confirmed when adding the video, and applies to videos processed from now on — for clips that are already rendered, use the Schedule button.
+          Clips are not rendered automatically — press Render on the ones you want. Each clip you render goes to YouTube as soon as it is ready: right away, or{" "}
+          {gapLabel(on && a ? a.gap_minutes : gap)} after the previous clip, so they go out one by one in the order you render them. It uses the rights you
+          confirmed when adding the video. For clips that were rendered earlier, use the Schedule button.
         </p>
         {on && a && (
           <p className="text-xs text-success">

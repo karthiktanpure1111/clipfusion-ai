@@ -94,7 +94,7 @@ export function StatusBadge({
 }
 
 const CLIP_LABELS: Record<string, string> = {
-  pending: "Queued",
+  pending: "Not rendered",
   processing: "Processing",
   generated: "Generated",
   uploading: "Uploading",

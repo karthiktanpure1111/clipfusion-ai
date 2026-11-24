@@ -78,7 +78,7 @@ function Workspace({ clipId, data }: { clipId: string; data: FramingOut }) {
     try {
       const out = await save();
       const n = out?.applied_to_clips ?? 0;
-      toast.success("Framing saved", n ? { description: `Also applied to the other ${n} clip${n === 1 ? "" : "s"} of this video (re-rendering).` } : undefined);
+      toast.success("Framing saved", n ? { description: `Also applied to the other ${n} clip${n === 1 ? "" : "s"} of this video — render them when you're ready.` } : undefined);
     } catch (e) {
       toast.error("Save failed", { description: errorMessage(e) });
       throw e;

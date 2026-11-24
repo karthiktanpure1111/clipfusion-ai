@@ -3,10 +3,10 @@
 * ``schedule_source`` (``POST /publishing/timeline``): every generated clip of a video that is not uploaded or
   scheduled yet gets a publishing-queue item, in timeline order, ``gap`` apart, starting right away when the
   channel is free (never within ``gap`` of another scheduled post; see ``plan_slots``) or at a chosen time.
-* Auto-schedule (on by default, ``PUT /publishing/auto-schedule``): when a video's clips have finished
-  rendering they are scheduled the same way -- clip 1 uploads right away, clip 2 one gap later, and so on.
-  A clip rendered later (e.g. after a framing review) joins the end of the queue, in timeline order. The rights
-  confirmed when the video was added cover these uploads.
+* Upload on render (on by default, ``PUT /publishing/auto-schedule``): clips are not rendered automatically;
+  every clip the user renders is put in the upload line as soon as its render finishes -- right away when the
+  channel had no post within ``gap``, otherwise ``gap`` after the previous post, so clips go out in the order
+  they were rendered, one per gap. The rights confirmed when the video was added cover these uploads.
 * Missed slots (ClipFusion was not running, or publishing was paused) are shifted forward keeping the gaps,
   instead of uploading everything back to back when ClipFusion starts again.
 
@@ -39,6 +39,7 @@ MISSED_AFTER = timedelta(minutes=10)  # later than this past its time = the slot
 PAST_TOLERANCE = timedelta(minutes=1)
 PENDING = (QueueStatus.SCHEDULED, QueueStatus.RENDERING)
 ACTIVE = (QueueStatus.SCHEDULED, QueueStatus.RENDERING, QueueStatus.PUBLISHING)
+DONE = (QueueStatus.PUBLISHED, QueueStatus.PROCESSING_REMOTE)  # uploaded
 DEFAULT_GAP_MINUTES = 60
 SETTINGS_KEY = "auto_schedule"
 RIGHTS_MESSAGE = "Confirm that you have the creator's permission, a licence, or other rights to publish this content."
@@ -55,13 +56,21 @@ def format_gap(gap: timedelta) -> str:
 # ------------------------------------------------------------------ slots
 def plan_slots(db: Session, account_id: uuid.UUID, gap: timedelta, count: int, *,
                now: datetime | None = None) -> list[datetime]:
-    """``count`` upload times for ``account_id``: the first as soon as possible (right now when the channel is
-    free), each next one ``gap`` later, and none closer than ``gap`` to a post that is already scheduled or
-    uploading -- free time before a later scheduled post is used instead of queueing behind it."""
+    """``count`` upload times for ``account_id``: the first as soon as possible (right now when the channel had
+    no post within ``gap``), each next one ``gap`` later, and none closer than ``gap`` to another post -- one that
+    is scheduled, uploading or was uploaded recently. Free time before a later scheduled post is used instead of
+    queueing behind it."""
     now = now or utcnow()
     Q = PublishingQueueItem
     taken = [ensure_utc(t) for t in db.scalars(select(Q.scheduled_at).where(
         Q.connected_account_id == account_id, Q.status.in_(ACTIVE), Q.scheduled_at.is_not(None)))]
+    recent = now - gap - timedelta(days=1)
+    for published, scheduled in db.execute(select(Q.published_at, Q.scheduled_at).where(
+            Q.connected_account_id == account_id, Q.status.in_(DONE),
+            (Q.published_at >= recent) | (Q.scheduled_at >= recent))).all():
+        when = ensure_utc(published or scheduled)
+        if when is not None:
+            taken.append(when)
     out: list[datetime] = []
     t = now
     for _ in range(max(count, 0)):
@@ -231,11 +240,11 @@ def _default_account(db: Session, user: User) -> ConnectedAccount | None:
     return next((a for a in accounts if SCOPE_YOUTUBE_UPLOAD in (a.scopes or [])), None)
 
 
-def _resolved(db: Session, user: User) -> tuple[bool, ConnectedAccount | None, int, str | None, datetime | None]:
-    """``(enabled, account, gap_minutes, privacy, since)``; auto-schedule is on unless switched off."""
-    cfg = auto_config(user)
+def _resolved(db: Session, user: User) -> tuple[bool, ConnectedAccount | None, int, str | None]:
+    """``(enabled, account, gap_minutes, privacy)``; upload-on-render is on unless switched off."""
     from app.core.config import get_settings
 
+    cfg = auto_config(user)
     enabled = bool(cfg.get("enabled", get_settings().auto_schedule_default))
     account = None
     account_id = _uuid(cfg.get("connected_account_id"))
@@ -245,32 +254,24 @@ def _resolved(db: Session, user: User) -> tuple[bool, ConnectedAccount | None, i
             account = None
     if account is None:
         account = _default_account(db, user)
-    since = None
-    if cfg.get("since"):
-        try:
-            since = ensure_utc(datetime.fromisoformat(str(cfg["since"])))
-        except ValueError:
-            since = None
-    return enabled, account, int(cfg.get("gap_minutes") or DEFAULT_GAP_MINUTES), cfg.get("privacy"), since
+    return enabled, account, int(cfg.get("gap_minutes") or DEFAULT_GAP_MINUTES), cfg.get("privacy")
 
 
 def auto_out(db: Session, user: User) -> dict[str, Any]:
-    enabled, account, gap, privacy, since = _resolved(db, user)
+    enabled, account, gap, privacy = _resolved(db, user)
     return {"enabled": enabled, "connected_account_id": account.id if account else None,
             "account_name": account.display_name if account else None, "gap_minutes": gap, "privacy": privacy,
-            "since": since, "rights_confirmed_at": None,
+            "since": None, "rights_confirmed_at": None,
             "next_slot_at": next_slot(db, account.id, timedelta(minutes=gap)) if account and enabled else None}
 
 
 def set_auto(db: Session, user: User, *, enabled: bool, connected_account_id: uuid.UUID | None, gap_minutes: int,
              privacy: str | None, rights_confirmed: bool = False) -> dict[str, Any]:
-    """Switch auto-schedule on/off (clips created from then on are scheduled). Commits."""
+    """Switch upload-on-render on/off. Commits."""
     cfg = auto_config(user)
-    was_enabled = bool(cfg) and bool(cfg.get("enabled"))
     if enabled and connected_account_id is not None:
         _youtube_account(db, user, connected_account_id)
-    if enabled and (not was_enabled or not cfg.get("since")):
-        cfg["since"] = utcnow().isoformat()
+    cfg.pop("since", None)
     cfg.update({"enabled": enabled, "gap_minutes": gap_minutes, "privacy": privacy})
     if connected_account_id is not None:
         cfg["connected_account_id"] = str(connected_account_id)
@@ -287,77 +288,45 @@ def _uuid(value: Any) -> uuid.UUID | None:
         return None
 
 
-def auto_schedule_source(db: Session, source_id: uuid.UUID) -> list[PublishingQueueItem]:
-    """Auto-schedule a video's ready clips that were never scheduled: in timeline order, the first right away
-    (or after the posts already waiting), then one per gap. Commits; never raises."""
+def schedule_rendered_clip(db: Session, clip: GeneratedClip) -> PublishingQueueItem | None:
+    """Upload on render: put a clip whose render just finished in the upload line -- right away when the channel
+    had no post within the gap, otherwise one gap after the previous post. Skipped when switched off, when the
+    clip was uploaded or already scheduled (or unscheduled by the user), or when the video was added without
+    confirming the rights. Commits; never raises."""
     from app.integrations.google_oauth import SCOPE_YOUTUBE_UPLOAD
-    from app.modules.upload_runs.service import _ordered_clips, uploadable
+    from app.modules.upload_runs.service import uploadable
 
     try:
-        source = db.get(VideoSource, source_id)
-        user = db.get(User, source.user_id) if source is not None else None
+        source = db.get(VideoSource, clip.video_source_id)
+        user = db.get(User, clip.user_id)
         if source is None or user is None or not source.rights_confirmed:
-            return []
-        enabled, account, gap_minutes, privacy, since = _resolved(db, user)
+            return None
+        enabled, account, gap_minutes, privacy = _resolved(db, user)
         if not enabled or account is None or account.status != AccountStatus.ACTIVE \
                 or SCOPE_YOUTUBE_UPLOAD not in (account.scopes or []):
-            return []
-        clips = [c for c in _ordered_clips(db, source.id)
-                 if c.upload_status == UploadStatus.NONE and uploadable(c)
-                 and (since is None or ensure_utc(c.created_at) >= since)]
-        if not clips:
-            return []
-        keys = {f"{c.id}:{account.id}": c for c in clips}
-        known = set(db.scalars(select(PublishingQueueItem.idempotency_key).where(
-            PublishingQueueItem.idempotency_key.in_(list(keys)))))
-        clips = [c for k, c in keys.items() if k not in known]  # scheduled, uploaded or unscheduled by the user
-        if not clips:
-            return []
+            return None
+        if clip.upload_status != UploadStatus.NONE or not uploadable(clip):
+            return None
+        key = f"{clip.id}:{account.id}"
+        if db.scalar(select(PublishingQueueItem.id).where(PublishingQueueItem.idempotency_key == key)) is not None:
+            return None  # scheduled, uploading, uploaded -- or unscheduled by the user
         if not privacy:
             from app.modules.users.service import read_settings
 
             privacy = read_settings(user).default_privacy
         gap = timedelta(minutes=gap_minutes)
-        slots = plan_slots(db, account.id, gap, len(clips))
-        first = slots[0]
-        items: list[PublishingQueueItem] = []
-        for clip in clips:
-            try:
-                with db.begin_nested():
-                    items.append(_enqueue(db, clip, account, slots[len(items)], privacy,
-                                          f"Auto-scheduled after rendering ({format_gap(gap)} apart)"))
-            except (ConflictError, ValidationFailed) as exc:
-                log.info("Clip %s not auto-scheduled: %s", clip.id, exc.message)
-        if items:
-            _keep_timeline_order(db, source.id, account.id)
+        when = next_slot(db, account.id, gap)
+        with db.begin_nested():
+            item = _enqueue(db, clip, account, when, privacy,
+                            f"Rendered: uploads {format_gap(gap)} after the previous post (or right away)")
         db.commit()
-        if items:
-            log.info("Auto-scheduled %d clips of source %s from %s, %s apart", len(items), source.id,
-                     first.isoformat(), format_gap(gap))
-            _start_due(db, items)
-        return items
-    except Exception:  # noqa: BLE001 - never fail the render/analysis job
+        log.info("Clip %s rendered: upload scheduled for %s", clip.id, when.isoformat())
+        _start_due(db, [item])
+        return item
+    except Exception:  # noqa: BLE001 - never fail the render job
         db.rollback()
-        log.exception("Auto-scheduling the clips of source %s failed", source_id)
-        return []
-
-
-def _keep_timeline_order(db: Session, source_id: uuid.UUID, account_id: uuid.UUID) -> None:
-    """Clips of one video that rendered out of order swap their (future) timeline times so they still go
-    out in timeline order. The set of times does not change."""
-    Q = PublishingQueueItem
-    soon = utcnow() + LEAD
-    rows = db.execute(select(Q, GeneratedClip).join(GeneratedClip, GeneratedClip.id == Q.clip_id).where(
-        GeneratedClip.video_source_id == source_id, GeneratedClip.removed_at.is_(None),
-        Q.connected_account_id == account_id, Q.status == QueueStatus.SCHEDULED, Q.origin == ORIGIN,
-        Q.scheduled_at > soon)).all()
-    if len(rows) < 2:
-        return
-    times = sorted(ensure_utc(item.scheduled_at) for item, _clip in rows)
-    ordered = sorted(rows, key=lambda r: (r[1].start_time, r[1].end_time, str(r[1].id)))
-    for (item, _clip), when in zip(ordered, times, strict=True):
-        item.scheduled_at = when
-    db.flush()
+        log.exception("Scheduling the upload of rendered clip %s failed", clip.id)
+        return None
 
 
 # ------------------------------------------------------------ missed slots

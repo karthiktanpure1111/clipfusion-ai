@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { CalendarClock, ChevronDown, Crop, ExternalLink, Pencil, Play, Trash2, UploadCloud, X } from "lucide-react";
+import { CalendarClock, ChevronDown, Clapperboard, Crop, ExternalLink, Loader2, Pencil, Play, Trash2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ClipStatusBadge, clipStatusOf } from "@/components/common/status-badge";
@@ -14,7 +14,9 @@ import { inText, slotText } from "@/components/uploads/schedule-panel";
 import { useNow } from "@/components/common/use-now";
 import { useUserTz } from "@/lib/api/hooks/auth";
 import { useScheduledItemAction } from "@/lib/api/hooks/timeline";
-import { useClipMeta } from "@/lib/api/hooks/clips";
+import { ApiError } from "@/lib/api/client";
+import { toastError } from "@/lib/api/hooks/common";
+import { useClipMeta, useRenderClip } from "@/lib/api/hooks/clips";
 import type { ClipMetadata, ClipOut } from "@/lib/api/types";
 import { CaptionEditor } from "./caption-editor";
 import { browserTimezone, clipNumber, formatBytes, formatDuration, formatHms } from "@/lib/format";
@@ -85,6 +87,23 @@ export function ClipTimelineRow({ clip }: { clip: ClipOut }) {
   const hasMedia = clip.media_available !== false && !cleaned;
   const canPreview = hasMedia && (!!clip.output_url || !!clip.proxy_url);
   const canUpload = status === "generated" || status === "upload_failed";
+  const render = useRenderClip(clip.id);
+  const rendering = clip.render_status === "queued" || clip.render_status === "rendering" || render.isPending;
+  const canRender = status === "pending" && hasMedia && !clip.needs_framing_review;
+  const startRender = async () => {
+    try {
+      await render.mutateAsync(false);
+      toast.success(`Rendering ${clipNumber(clip.sequence)}`, {
+        description: "When it's done it goes to YouTube: right away, or 1 hour after the previous clip.",
+      });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.code === "framing_warnings_unacknowledged")
+        toast.warning("Check the framing first", {
+          description: "This framing would hide or cut a face. Open the framing editor, fix or accept it, then render.",
+        });
+      else toastError(e, "Could not start the render");
+    }
+  };
   const title = sm?.youtube.title || clip.title || clip.hook_text || "Untitled clip";
   const caption = sm?.instagram.caption && sm.instagram.caption !== title ? sm.instagram.caption : null;
   const description = sm?.youtube.description;
@@ -184,6 +203,16 @@ export function ClipTimelineRow({ clip }: { clip: ClipOut }) {
         {status === "upload_failed" && clip.upload_error && <p className="text-xs break-words text-[#ff8098]">Upload failed: {clip.upload_error}</p>}
 
         <div className="flex flex-wrap gap-2 pt-1">
+          {(canRender || rendering) && status !== "generated" && (
+            <Button size="sm" className="glow-red rounded-lg" onClick={startRender} disabled={rendering}>
+              {rendering ? <Loader2 className="animate-spin" /> : <Clapperboard />} {rendering ? "Rendering…" : "Render"}
+            </Button>
+          )}
+          {status === "pending" && clip.needs_framing_review && (
+            <Link href={`/app/clips/${clip.id}/framing`} className={cn(buttonVariants({ size: "sm" }), "rounded-lg")}>
+              <Crop /> Review framing to render
+            </Link>
+          )}
           {canUpload && (
             <Button size="sm" className="rounded-lg" onClick={() => setUploadOpen(true)}>
               <UploadCloud /> {clip.scheduled_at ? "Upload now" : "Upload"}

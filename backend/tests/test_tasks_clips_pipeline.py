@@ -83,9 +83,8 @@ def test_clip_vision_end_to_end(db, user, enqueued, media_dir) -> None:
     assert framing.vision["clip_start"] == 0.5 and framing.mode in ("smart", "full_frame", "manual")
     assert clip.subtitles is None  # API v2: no captions are created
     assert clip.media_bytes and clip.media_bytes > 0
-    # API v2: the render starts automatically unless blocking framing warnings need a review
-    assert job.result["auto_render"] in ("requested", "needs_review")
-    assert ("render_clip" in enqueued) == (job.result["auto_render"] == "requested")
+    # clips are rendered by the user, one by one: no automatic render after the framing analysis
+    assert "auto_render" not in job.result and "render_clip" not in enqueued
     # a user-edited framing is kept (keyframes/warnings recomputed) when the analysis re-runs
     framing.auto_generated = False
     framing.mode, framing.config = "full_frame", {"mode": "full_frame"}
