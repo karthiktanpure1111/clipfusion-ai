@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { useNow } from "@/components/common/use-now";
 import { localInputToIso } from "@/components/clips/publish-dialog";
-import { useUserTz } from "@/lib/api/hooks/auth";
+import { useMe, useUserTz } from "@/lib/api/hooks/auth";
+import { usePublishingPause } from "@/lib/api/hooks/publishing";
 import { useAutoSchedule, useClearTimeline, useSaveAutoSchedule, useScheduledItemAction, useScheduleTimeline, useTimelineNext } from "@/lib/api/hooks/timeline";
 import type { ClipOut } from "@/lib/api/types";
 import { browserTimezone, clipNumber, formatInTz } from "@/lib/format";
@@ -195,9 +196,27 @@ export function ScheduledList({ sourceId, clips }: { sourceId: string; clips: Cl
   const scheduled = clips
     .filter((c) => c.scheduled_at && c.scheduled_item_id)
     .sort((a, b) => (a.scheduled_at as string).localeCompare(b.scheduled_at as string));
+  const me = useMe();
+  const pause = usePublishingPause();
+  const paused = !!me.data?.settings.publishing_paused;
   if (!scheduled.length) return null;
   return (
     <div className="space-y-2 rounded-xl border border-info/20 bg-info/[0.04] p-3">
+      {paused && (
+        <div role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2.5 text-xs">
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-warning">Publishing is paused.</span> Nothing uploads — not even overdue posts — until you resume.
+          </span>
+          <Button
+            size="sm"
+            className="h-7 rounded-lg"
+            disabled={pause.isPending}
+            onClick={() => pause.mutate(false, { onSuccess: () => toast.success("Publishing resumed") })}
+          >
+            Resume publishing
+          </Button>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-sm font-medium">
           <CalendarClock className="size-4 text-info" /> Scheduled ({scheduled.length})

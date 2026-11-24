@@ -57,6 +57,8 @@ class DashboardSummary(BaseModel):
     published_clips: int
     failed_uploads: int
     next_publish_at: datetime | None = None
+    publishing_paused: bool = False  # nothing uploads until publishing is resumed
+    next_scheduled_at: datetime | None = None  # earliest scheduled post, also while paused
     clips_per_day: list[DayCount]
     published_per_day: list[DayPublished]
     recent_clips: list[_ClipOut]  # type: ignore[valid-type]

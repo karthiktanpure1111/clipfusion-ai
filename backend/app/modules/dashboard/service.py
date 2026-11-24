@@ -49,7 +49,7 @@ def _local_day(ts: datetime, tz: ZoneInfo) -> date:
 def summary(db: Session, user: User, *, days: int = 14) -> dict[str, Any]:
     """All dashboard numbers for ``user`` (per-day series bucketed in the user's timezone)."""
     from app.modules.publishing.service import serialize_items
-    from app.modules.scheduling.service import next_publish_time
+    from app.modules.scheduling.service import is_user_paused, next_publish_time
 
     uid = user.id
     tz = _tz(user)
@@ -96,6 +96,8 @@ def summary(db: Session, user: User, *, days: int = 14) -> dict[str, Any]:
         "failed_uploads": _count(db, select(func.count(PublishingQueueItem.id)).where(
             PublishingQueueItem.user_id == uid, PublishingQueueItem.status == QueueStatus.FAILED)),
         "next_publish_at": next_publish_time(db, user),
+        "publishing_paused": is_user_paused(user),
+        "next_scheduled_at": upcoming[0].scheduled_at if upcoming else None,
         "clips_per_day": [{"date": d.isoformat(), "count": n} for d, n in clip_days.items()],
         "published_per_day": [{"date": d.isoformat(), **v} for d, v in pub_days.items()],
         "recent_clips": _clips_out(db, recent),

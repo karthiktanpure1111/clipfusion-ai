@@ -100,3 +100,14 @@ def test_dashboard_shows_the_upload_allowance(client, user) -> None:
     assert set(q) == {"uploads", "search", "units", "resets_at"}
     assert q["uploads"]["limit"] == get_settings().youtube_daily_upload_limit
     assert q["uploads"]["remaining"] == max(q["uploads"]["limit"] - q["uploads"]["used"], 0)
+
+
+def test_dashboard_says_when_publishing_is_paused(client, db, user) -> None:
+    from tests.test_upload_runs_factories import headers
+
+    h = headers(user)
+    assert client.get("/api/v1/dashboard/summary", headers=h).json()["publishing_paused"] is False
+    assert client.post("/api/v1/publishing/pause", headers=h).json() == {"paused": True}
+    data = client.get("/api/v1/dashboard/summary", headers=h).json()
+    assert data["publishing_paused"] is True and data["next_publish_at"] is None
+    assert client.post("/api/v1/publishing/resume", headers=h).json() == {"paused": False}

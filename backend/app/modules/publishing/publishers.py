@@ -107,6 +107,7 @@ def publish_youtube(db: Session, item: PublishingQueueItem, account: ConnectedAc
     status = video.get("status") or {}
     item.external_id = video_id
     item.external_url = youtube_url(video_id)
+    item.last_error = None  # an earlier failed attempt's message no longer applies
     item.upload_session_url = None
     item.remote_status = status.get("uploadStatus") or "uploaded"
     requested = resource["status"]["privacyStatus"]

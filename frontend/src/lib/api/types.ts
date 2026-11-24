@@ -693,6 +693,8 @@ export interface DashboardSummary {
   scheduled_posts: number;
   published_clips: number;
   failed_uploads: number;
+  publishing_paused?: boolean;
+  next_scheduled_at?: ISODate | null;
   next_publish_at: ISODate | null;
   clips_per_day: { date: string; count: number }[];
   published_per_day: { date: string; youtube: number; instagram: number }[];

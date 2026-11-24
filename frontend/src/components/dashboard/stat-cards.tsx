@@ -43,15 +43,27 @@ export function StatCards({ data }: { data: DashboardSummary }) {
       glow: data.failed_uploads ? "from-[#FF0033]/30" : "from-white/5",
       iconClass: data.failed_uploads ? "text-[#ff5c7a]" : "text-muted-foreground",
     },
-    {
-      label: "Next publishing time",
-      value: data.next_publish_at ? <Countdown to={data.next_publish_at} /> : "—",
-      hint: data.next_publish_at ? formatDateTime(data.next_publish_at, tz) : "Nothing scheduled",
-      icon: Clock4,
-      href: "/app/calendar",
-      glow: "from-[#FF0033]/25",
-      iconClass: "text-[#ff4d6d]",
-    },
+    data.publishing_paused
+      ? {
+          label: "Publishing paused",
+          value: "Paused",
+          hint: data.scheduled_posts
+            ? `${data.scheduled_posts} scheduled post${data.scheduled_posts === 1 ? "" : "s"} wait — resume on the Publishing Calendar`
+            : "Resume on the Publishing Calendar",
+          icon: Clock4,
+          href: "/app/calendar",
+          glow: "from-[#FCAF45]/30",
+          iconClass: "text-warning",
+        }
+      : {
+          label: "Next publishing time",
+          value: data.next_publish_at ? <Countdown to={data.next_publish_at} /> : "—",
+          hint: data.next_publish_at ? formatDateTime(data.next_publish_at, tz) : "Nothing scheduled",
+          icon: Clock4,
+          href: "/app/calendar",
+          glow: "from-[#FF0033]/25",
+          iconClass: "text-[#ff4d6d]",
+        },
   ];
   const yq = data.youtube_quota;
   if (yq) {
