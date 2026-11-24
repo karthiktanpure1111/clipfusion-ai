@@ -14,19 +14,19 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.database import utcnow
 from app.core.errors import QuotaExceeded
 from app.core.storage import materialize
 from app.integrations import quota
 from app.integrations.google_oauth import SCOPE_YOUTUBE_UPLOAD
+from app.integrations.http import ProviderError
 from app.integrations.instagram import InstagramClient, build_caption
 from app.integrations.youtube_upload import YouTubeUploader, build_video_resource
 from app.models import ConnectedAccount, GeneratedClip, PublishingQueueItem
 from app.models.enums import NotificationType, Platform, QueueStatus
 from app.modules.accounts.tokens import get_access_token
 from app.modules.publishing import history
-from app.modules.publishing.errors import IG_RATE_RETRY, PERMANENT, PublishError
+from app.modules.publishing.errors import IG_RATE_RETRY, PERMANENT, YT_QUOTA_REASONS, PublishError
 from app.modules.scheduling.service import refresh_item_schedule
 
 log = logging.getLogger(__name__)
@@ -66,26 +66,41 @@ def _require_render(clip: GeneratedClip) -> str:
 # ------------------------------------------------------------------ YouTube
 def publish_youtube(db: Session, item: PublishingQueueItem, account: ConnectedAccount, clip: GeneratedClip,
                     progress: Progress | None = None) -> None:
-    """Resumable upload of the rendered clip; leaves the item processing_remote or published."""
-    settings = get_settings()
+    """Resumable upload of the rendered clip; leaves the item processing_remote or published.
+
+    Quota: one ``videos.insert`` (1 unit in YouTube's own upload bucket, 100/day by default) is charged when the
+    upload session is created. Resuming a session or re-checking an uploaded video never uploads again."""
     if SCOPE_YOUTUBE_UPLOAD not in (account.scopes or []):
         raise PublishError(PERMANENT, "The YouTube connection lacks the upload permission; reconnect it.")
     key = _require_render(clip)
     token = get_access_token(db, account)
     uploader = YouTubeUploader(token)
+    if item.external_id and item.remote_status not in ("rejected", "failed", "deleted"):
+        # A retry after YouTube already accepted this video: check it instead of uploading a duplicate.
+        history.record(db, item, "status", QueueStatus.PUBLISHING,
+                       f"Already on YouTube as {item.external_id}; checking it instead of uploading again")
+        poll_youtube(db, item, account)
+        return
     resource = build_video_resource(item.payload or {}, default_title=clip.title)
     if not item.upload_session_url:
-        quota.ensure_youtube_quota(db, settings.youtube_upload_quota_cost)
+        quota.ensure_youtube_upload_quota(db)
 
     def on_session(url: str) -> None:
         item.upload_session_url = url
-        quota.record_usage(db, quota.YOUTUBE, str(account.id), settings.youtube_upload_quota_cost)
+        quota.record_usage(db, quota.YOUTUBE_UPLOADS, str(account.id), quota.COST_INSERT)
         history.record(db, item, "upload", QueueStatus.PUBLISHING, "YouTube resumable upload session started")
         db.commit()
 
-    with materialize(key, ".mp4") as path:
-        video = uploader.upload(path, resource, session_url=item.upload_session_url, on_session=on_session,
-                                progress=progress)
+    try:
+        with materialize(key, ".mp4") as path:
+            video = uploader.upload(path, resource, session_url=item.upload_session_url, on_session=on_session,
+                                    progress=progress)
+    except ProviderError as exc:
+        if str(exc.reason or "") in YT_QUOTA_REASONS:  # YouTube's own count wins over ours
+            db.rollback()
+            quota.mark_exhausted(db, quota.YOUTUBE_UPLOADS, str(account.id))
+            db.commit()
+        raise
     video_id = str(video.get("id") or "")
     if not video_id:
         raise PublishError(PERMANENT, "YouTube accepted the upload but returned no video id.")

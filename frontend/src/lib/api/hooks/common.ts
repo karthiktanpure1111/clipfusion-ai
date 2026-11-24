@@ -20,7 +20,7 @@ function humanCode(code: string): string | undefined {
     case "integration_not_configured":
       return "This integration is not configured on the server.";
     case "quota_exceeded":
-      return "Platform quota exceeded — try again later.";
+      return "Daily platform quota used up — it resets later (YouTube: midnight Pacific Time).";
     case "rate_limited":
       return "Too many requests — slow down a little.";
     case "dependency_missing":

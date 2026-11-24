@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import utcnow
+from app.integrations import quota
 from app.models import GeneratedClip, ProcessingJob, PublishingQueueItem, User, VideoSource
 from app.models.enums import QueueStatus, RenderStatus, SourceStatus, UploadStatus
 from app.modules.jobs.service import jobs_out
@@ -100,6 +101,7 @@ def summary(db: Session, user: User, *, days: int = 14) -> dict[str, Any]:
         "recent_clips": _clips_out(db, recent),
         "active_jobs": jobs_out(db, jobs),
         "upcoming": serialize_items(db, upcoming),
+        "youtube_quota": quota.youtube_status(db),
     }
 
 

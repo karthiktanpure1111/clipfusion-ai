@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { AlertTriangle, CalendarClock, CheckCircle2, Clapperboard, Clock4, Cpu, Library, UploadCloud } from "lucide-react";
+import { AlertTriangle, CalendarClock, CheckCircle2, Clapperboard, Clock4, Cpu, Gauge, Library, UploadCloud } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Countdown } from "@/components/common/fields";
 import { itemVariants, listVariants } from "@/components/common/page";
@@ -53,6 +53,19 @@ export function StatCards({ data }: { data: DashboardSummary }) {
       iconClass: "text-[#ff4d6d]",
     },
   ];
+  const yq = data.youtube_quota;
+  if (yq) {
+    const left = yq.uploads.remaining;
+    stats.push({
+      label: "YouTube uploads left today",
+      value: `${formatCount(left)} / ${formatCount(yq.uploads.limit)}`,
+      hint: left ? `Resets ${formatDateTime(yq.resets_at, tz)} (midnight Pacific)` : `Used up — uploads wait until ${formatDateTime(yq.resets_at, tz)}`,
+      icon: Gauge,
+      href: "/app/accounts",
+      glow: left ? "from-[#22C55E]/15" : "from-[#FF0033]/30",
+      iconClass: left ? "text-success" : "text-[#ff5c7a]",
+    });
+  }
 
   return (
     <motion.ul variants={listVariants} initial="hidden" animate="show" className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">

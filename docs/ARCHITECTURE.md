@@ -302,5 +302,5 @@ Mode compilation (`compile_layout`):
 * Schedules: interval (60/120/180/360/custom minutes, optional daily window) or specific
   times; days of week; IANA timezone; `daily_limit`; pause/resume; review vs automatic
   mode. Slot assignment skips slots already used by the same account.
-* Quotas: YouTube units tracked per day in `api_quota_usage` (upload cost configurable);
+* Quotas: YouTube buckets tracked per Pacific day in `api_quota_usage` (uploads 100/day, search 100/day, other methods 10,000 units/day);
   Instagram `content_publishing_limit` checked before publishing.

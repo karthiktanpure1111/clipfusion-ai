@@ -56,8 +56,8 @@ def _classify_provider(exc: ProviderError) -> PublishError:
     reason = str(exc.reason or "")
     if exc.provider.startswith("youtube"):
         if reason in YT_QUOTA_REASONS:
-            return PublishError(QUOTA, f"YouTube API quota exhausted ({exc.provider_message})",
-                                quota.next_reset(quota.YOUTUBE))
+            return PublishError(QUOTA, f"YouTube's daily quota is used up ({exc.provider_message}). "
+                                "It resets at midnight Pacific Time.", quota.next_reset(quota.YOUTUBE))
         if reason in YT_UPLOAD_LIMIT_REASONS:
             return PublishError(QUOTA, f"YouTube channel upload limit reached ({exc.provider_message})",
                                 utcnow() + timedelta(days=1))

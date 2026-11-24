@@ -93,7 +93,9 @@ export function RequirementsPanel({ req }: { req: PlatformRequirements }) {
             <Bullets items={req.app_review} />
             {req.quota && (
               <p className="text-xs text-muted-foreground">
-                Quota: {formatCount(req.quota.daily_units)} units per day, about {formatCount(req.quota.upload_cost)} per upload.
+                {req.quota.uploads_per_day != null
+                  ? `Quota per day: ${formatCount(req.quota.uploads_per_day)} video uploads (own bucket, 1 unit each), ${formatCount(req.quota.searches_per_day ?? 100)} searches, and ${formatCount(req.quota.daily_units)} units for all other calls. Resets at midnight Pacific Time.`
+                  : `Quota: ${formatCount(req.quota.daily_units)} units per day.`}
               </p>
             )}
             {req.publish_limit != null && <p className="text-xs text-muted-foreground">ClipFusion limit: {req.publish_limit} posts per day per account.</p>}

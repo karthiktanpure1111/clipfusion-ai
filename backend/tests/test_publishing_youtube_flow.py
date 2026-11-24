@@ -73,7 +73,9 @@ def test_upload_then_poll_until_processed(db, user, short_file) -> None:
     assert item.external_id == "vidABCDEFGH" and item.external_url == "https://www.youtube.com/watch?v=vidABCDEFGH"
     assert item.upload_session_url is None and init.call_count == 1
     assert chunks[0] == f"bytes 0-{min(size, 256 * 1024) - 1}/{size}"
-    assert quota.get_usage(db, quota.YOUTUBE, str(acc.id)) == get_settings().youtube_upload_quota_cost
+    # one videos.insert = 1 unit in the uploads bucket; nothing charged to the 10,000-unit bucket by the upload
+    assert quota.get_usage(db, quota.YOUTUBE_UPLOADS, str(acc.id)) == 1
+    assert quota.get_usage(db, quota.YOUTUBE, str(acc.id)) == 0
     msgs = db.scalars(select(PublishingHistory.message).where(PublishingHistory.queue_item_id == item.id)).all()
     assert any("locked to private" in (m or "") for m in msgs)
 
@@ -119,7 +121,8 @@ def test_interrupted_upload_resumes_on_item_retry(db, user, short_file) -> None:
 
 @respx.mock
 def test_daily_quota_reschedules_to_pacific_midnight(db, user, short_file, monkeypatch) -> None:
-    monkeypatch.setattr(get_settings(), "youtube_daily_quota", 100)
+    # today's upload bucket is full (whatever the other tests already used)
+    monkeypatch.setattr(get_settings(), "youtube_daily_upload_limit", quota.get_usage(db, quota.YOUTUBE_UPLOADS))
     acc, item, job = _claimed_job(db, user, short_file)
     init = respx.post(url__startswith=UPLOAD_URL)
     publish_queue_item(str(job.id))
@@ -140,3 +143,52 @@ def test_revoked_account_fails_permanently(db, user, short_file) -> None:
     assert item.status == QueueStatus.FAILED and "upload permission" in item.last_error
     assert db.scalar(select(Notification).where(Notification.user_id == user.id,
                                                 Notification.type == NotificationType.PUBLISH_FAILED))
+
+
+@respx.mock
+def test_full_10000_unit_bucket_does_not_block_uploads(db, user, short_file, monkeypatch) -> None:
+    # the old rule (1,600 units per upload checked against 10,000 combined units) would refuse this upload
+    monkeypatch.setattr(get_settings(), "youtube_daily_quota", quota.get_usage(db, quota.YOUTUBE))
+    acc, item, job = _claimed_job(db, user, short_file)
+    init = respx.post(url__startswith=UPLOAD_URL).mock(return_value=httpx.Response(200, headers={"Location": SESSION}))
+    respx.put(SESSION).mock(return_value=httpx.Response(200, json={"id": "vidQUOTA001", "status": {
+        "uploadStatus": "uploaded", "privacyStatus": "private"}}))
+    publish_queue_item(str(job.id))
+    db.expire_all()
+    assert init.call_count == 1 and item.external_id == "vidQUOTA001", item.last_error
+
+
+@respx.mock
+def test_youtube_quota_error_marks_the_upload_bucket_used_up(db, user, short_file) -> None:
+    from app.models import ApiQuotaUsage
+
+    acc, item, job = _claimed_job(db, user, short_file)
+    respx.post(url__startswith=UPLOAD_URL).mock(return_value=httpx.Response(403, json={"error": {
+        "code": 403, "message": "The request cannot be completed because you have exceeded your quota.",
+        "errors": [{"reason": "quotaExceeded"}]}}))
+    try:
+        publish_queue_item(str(job.id))
+        db.expire_all()
+        assert item.status == QueueStatus.SCHEDULED and item.attempts == 0  # waits, never counted as failed
+        assert item.scheduled_at == quota.next_reset(quota.YOUTUBE) and "midnight pacific" in item.last_error.lower()
+        assert item.external_id is None  # nothing assumed uploaded
+        assert quota.youtube_status(db)["uploads"]["remaining"] == 0  # YouTube's answer wins over our count
+    finally:  # the test database is shared: give the bucket back to the other tests
+        db.query(ApiQuotaUsage).filter(ApiQuotaUsage.provider == quota.YOUTUBE_UPLOADS,
+                                       ApiQuotaUsage.scope_key == str(acc.id)).delete()
+        db.commit()
+
+
+@respx.mock
+def test_retry_after_youtube_accepted_the_video_never_uploads_twice(db, user, short_file) -> None:
+    acc, item, job = _claimed_job(db, user, short_file)
+    item.external_id, item.remote_status = "vidALREADY1", "uploaded"  # accepted by YouTube on an earlier try
+    db.commit()
+    before = quota.get_usage(db, quota.YOUTUBE_UPLOADS, str(acc.id))
+    init = respx.post(url__startswith=UPLOAD_URL)
+    respx.get(VIDEOS_URL).mock(return_value=httpx.Response(200, json={"items": [{
+        "id": "vidALREADY1", "status": {"uploadStatus": "processed", "privacyStatus": "private"}}]}))
+    publish_queue_item(str(job.id))
+    db.expire_all()
+    assert not init.called and item.status == QueueStatus.PUBLISHED and item.external_id == "vidALREADY1"
+    assert quota.get_usage(db, quota.YOUTUBE_UPLOADS, str(acc.id)) == before  # no second videos.insert

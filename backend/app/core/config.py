@@ -121,8 +121,12 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     youtube_api_key: str = ""  # optional: public metadata lookups without OAuth
-    youtube_daily_quota: int = 10_000
-    youtube_upload_quota_cost: int = 1_600
+    # YouTube Data API quota buckets (https://developers.google.com/youtube/data/determine_quota_cost):
+    # videos.insert and search.list have their own buckets (default 100 calls/day each, 1 unit per call);
+    # every other method shares the default 10,000 units/day. All reset at midnight Pacific Time.
+    youtube_daily_quota: int = 10_000  # units/day for all other methods (videos.list, channels.list, ...)
+    youtube_daily_upload_limit: int = 100  # videos.insert calls/day (own bucket)
+    youtube_daily_search_limit: int = 100  # search.list calls/day (own bucket)
     youtube_upload_chunk_bytes: int = 8 * 1024 * 1024
     # Clip media is deleted only after videos.list confirms the upload; unconfirmed clips are
     # re-checked by the maintenance worker at this interval.

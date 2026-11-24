@@ -50,18 +50,22 @@ def _youtube() -> dict[str, Any]:
             "requires a security assessment.",
             "Videos uploaded through an unverified API project created after 28 July 2020 are locked to "
             "private until the project passes the YouTube API Services audit.",
-            f"Default quota is {s.youtube_daily_quota:,} units/day per project; an upload costs about "
-            f"{s.youtube_upload_quota_cost:,} units. Request more through the YouTube API Services audit and "
+            f"Default quota per Google Cloud project: {s.youtube_daily_upload_limit} video uploads/day "
+            f"(videos.insert, its own bucket, 1 unit each), {s.youtube_daily_search_limit} searches/day "
+            f"(search.list, its own bucket) and {s.youtube_daily_quota:,} units/day for all other calls. "
+            "Quotas reset at midnight Pacific Time. Request more through the YouTube API Services audit and "
             "quota extension form.",
         ],
         "notes": [
             "ClipFusion never asks for your Google password; you sign in on Google's own page.",
             "You can revoke access at any time at https://myaccount.google.com/permissions.",
         ],
-        "quota": {"daily_units": s.youtube_daily_quota, "upload_cost": s.youtube_upload_quota_cost},
+        "quota": {"daily_units": s.youtube_daily_quota, "uploads_per_day": s.youtube_daily_upload_limit,
+                  "searches_per_day": s.youtube_daily_search_limit, "upload_cost": 1},
         "docs_links": [
             {"title": "Setup guide", "url": _DOC},
             {"title": "YouTube Data API: videos.insert", "url": "https://developers.google.com/youtube/v3/docs/videos/insert"},
+            {"title": "YouTube Data API quota costs", "url": "https://developers.google.com/youtube/data/determine_quota_cost"},
             {"title": "Resumable uploads", "url": "https://developers.google.com/youtube/v3/guides/using_resumable_upload_protocol"},
             {"title": "Quota and compliance audits", "url": "https://developers.google.com/youtube/v3/guides/quota_and_compliance_audits"},
             {"title": "OAuth app verification", "url": "https://support.google.com/cloud/answer/13463073"},

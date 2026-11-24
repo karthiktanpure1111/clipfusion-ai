@@ -50,8 +50,9 @@ Environment variables:
 |---|---|---|
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yes, for connecting YouTube | OAuth web client |
 | `YOUTUBE_API_KEY` | optional | public metadata lookups without OAuth |
-| `YOUTUBE_DAILY_QUOTA` | default `10000` | your project's daily unit quota |
-| `YOUTUBE_UPLOAD_QUOTA_COST` | default `1600` | units charged per `videos.insert` |
+| `YOUTUBE_DAILY_UPLOAD_LIMIT` | default `100` | `videos.insert` calls per day (own quota bucket, 1 unit each) |
+| `YOUTUBE_DAILY_SEARCH_LIMIT` | default `100` | `search.list` calls per day (own quota bucket) |
+| `YOUTUBE_DAILY_QUOTA` | default `10000` | units per day for every other method (`videos.list`, `channels.list`, ...) |
 | `YOUTUBE_UPLOAD_CHUNK_BYTES` | default 8 MiB | resumable chunk size (rounded to 256 KiB multiples) |
 
 ### 2.2 OAuth consent screen and scopes
@@ -83,12 +84,19 @@ verification for the sensitive scopes (privacy policy, homepage, demo video of t
 leave Drive import disabled if you do not need it.
 
 ### 2.3 YouTube API Services audit, quota, private lock
-* Default quota is **10,000 units/day per Google Cloud project**, reset at midnight Pacific
-  Time. Reads cost 1 unit (`videos.list`, `channels.list`); an upload (`videos.insert`)
-  costs about **1,600 units** — i.e. roughly six uploads per day on the default quota.
-  ClipFusion records usage in `api_quota_usage` (per account) and refuses an upload when
-  the project-wide total for the Pacific day would exceed `YOUTUBE_DAILY_QUOTA`; the queue
-  item is rescheduled for the next quota reset instead of failing.
+* Quota belongs to the **Google Cloud project** and is split into buckets (since June 2026, see
+  <https://developers.google.com/youtube/data/determine_quota_cost>): **`videos.insert` — 100 uploads/day**
+  (its own bucket, 1 unit per upload), **`search.list` — 100 requests/day** (its own bucket) and
+  **10,000 units/day for all other methods** (`videos.list` = 1, `channels.list` = 1, `videos.update` = 50,
+  `thumbnails.set` = 50, ...). All buckets reset at **midnight Pacific Time**.
+  ClipFusion records usage per bucket in `api_quota_usage` (per account; checked project-wide for the
+  Pacific day). An upload is checked only against the upload bucket — never against the 10,000 units — and
+  is charged once, when its resumable session is created (resuming never charges again). When the bucket is
+  used up the queue item waits for the next reset instead of failing. A real `quotaExceeded` /
+  `dailyLimitExceeded` answer from YouTube marks the bucket as used up until the reset (YouTube's count wins
+  over ClipFusion's estimate). The dashboard shows the uploads left today.
+* A retry never uploads twice: the queue item's idempotency key (clip + account), the persisted resumable
+  session URI and the stored video id (a retry after YouTube accepted the video only re-checks it).
 * More quota requires the **YouTube API Services audit and quota extension form**
   (compliance review against the YouTube API Services Terms and Developer Policies).
 * **Videos uploaded through `videos.insert` from unverified API projects created after

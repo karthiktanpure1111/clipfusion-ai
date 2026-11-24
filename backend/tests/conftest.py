@@ -20,6 +20,8 @@ os.environ["DATABASE_URL"] = os.environ.get("CF_TEST_DATABASE_URL", f"sqlite:///
 os.environ["AUTH_REQUIRED"] = "true"  # no-login mode has its own tests
 os.environ["WORKER_MODE"] = "local"
 os.environ["AUTO_SCHEDULE_DEFAULT"] = "false"  # only the auto-schedule tests switch it on
+# every test shares one database and one Pacific quota day: the quota tests lower the upload limit themselves
+os.environ["YOUTUBE_DAILY_UPLOAD_LIMIT"] = "100000"
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["LOCAL_STORAGE_DIR"] = str(_TMP / "storage")
 os.environ["TEMP_DIR"] = str(_TMP / "tmp")
